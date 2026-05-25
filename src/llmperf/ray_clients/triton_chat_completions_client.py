@@ -12,27 +12,27 @@ from llmperf import common_metrics
 
 
 @ray.remote
-class OpenAIChatCompletionsClient(LLMClient):
+class TritonChatCompletionsClient(LLMClient):
     """Client for OpenAI Chat Completions API."""
 
     def llm_request(self, request_config: RequestConfig) -> Dict[str, Any]:
         prompt = request_config.prompt
         prompt, prompt_len = prompt
 
-        message = [
-            {"role": "user", "content": prompt},
-        ]
-        model = request_config.model
+        # message = [
+        #     {"role": "user", "content": ""},
+        #     {"role": "assistant", "content": ""},
+        #     {"role": "user", "content": prompt},
+        # ]
+
         body = {
-            "model": model,
-            "messages": message,
-            "stream": True,
-            "cache": {
-                "no-cache": True # will not return a cached response 
-            }
+            "name": "prompt",
+            "shape": [1],
+            "datatype": "BYTES",
+            "data": ["".join(prompt)],
         }
-        sampling_params = request_config.sampling_params
-        body.update(sampling_params or {})
+        # sampling_params = request_config.sampling_params
+        # body.update(sampling_params or {})
         time_to_next_token = []
         tokens_received = 0
         ttft = 0
@@ -52,24 +52,24 @@ class OpenAIChatCompletionsClient(LLMClient):
         address = os.environ.get("OPENAI_API_BASE")
         if not address:
             raise ValueError("the environment variable OPENAI_API_BASE must be set.")
-        key = os.environ.get("OPENAI_API_KEY")
-        if key:
-            # raise ValueError("the environment variable OPENAI_API_KEY must be set.")
-            headers = {"Authorization": f"Bearer {key}",
-                       "Content-Type": "application/json"}
-        else:
-            headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
         if not address:
             raise ValueError("No host provided.")
         if not address.endswith("/"):
             address = address + "/"
-        address += "chat/completions"
+        address += f"models/{request_config.model}/infer"
+        inputs = {
+            "inputs": [
+                body
+            ]
+        }
+        # print(inputs)
         try:
             with requests.post(
                 address,
-                json=body,
+                json=inputs,
                 stream=True,
-                timeout=180,
+                timeout=6000,
                 headers=headers,
             ) as response:
                 if response.status_code != 200:
@@ -81,8 +81,8 @@ class OpenAIChatCompletionsClient(LLMClient):
 
                     if not chunk:
                         continue
-                    stem = "data: "
-                    chunk = chunk[len(stem) :]
+                    # stem = "data:"
+                    # chunk = chunk[len(stem): ]
                     if chunk == b"[DONE]":
                         continue
                     tokens_received += 1
@@ -93,19 +93,8 @@ class OpenAIChatCompletionsClient(LLMClient):
                         error_response_code = data["error"]["code"]
                         raise RuntimeError(data["error"]["message"])
                         
-                    # delta = data["choices"][0]["delta"]
-                    choices = data.get("choices")
-                    if not choices:
-                        continue  # ignore malformed or keepalive frames
-
-                    choice = choices[0]
-
-                    # Ignore stop/final frame
-                    if choice.get("finish_reason") is not None:
-                        continue
-
-                    delta = choice.get("delta") or {}
-                    if delta.get("content", None):
+                    delta = data['outputs'][0]
+                    if delta.get("data", None):
                         if not ttft:
                             ttft = time.monotonic() - start_time
                             time_to_next_token.append(ttft)
@@ -114,41 +103,17 @@ class OpenAIChatCompletionsClient(LLMClient):
                                 time.monotonic() - most_recent_received_token_time
                             )
                         most_recent_received_token_time = time.monotonic()
-                        generated_text += delta["content"]
+                        generated_text += delta["data"][0]
 
             total_request_time = time.monotonic() - start_time
             output_throughput = tokens_received / total_request_time
 
         except Exception as e:
-            import traceback
-            
-            # Capture detailed error information
-            error_details = {
-                "exception_type": type(e).__name__,
-                "exception_message": str(e),
-                "error_response_code": error_response_code,
-                "error_msg": error_msg,
-                "request_url": address,
-                "request_model": model,
-                "traceback": traceback.format_exc()
-            }
-            
-            metrics[common_metrics.ERROR_MSG] = error_msg if error_msg else str(e)
+            metrics[common_metrics.ERROR_MSG] = error_msg
             metrics[common_metrics.ERROR_CODE] = error_response_code
-            
-            # Print verbose error information
-            print("=" * 80)
-            print("REQUEST FAILED - Detailed Error Information:")
-            print("=" * 80)
-            print(f"Exception Type: {error_details['exception_type']}")
-            print(f"Exception Message: {error_details['exception_message']}")
-            print(f"HTTP Status Code: {error_details['error_response_code']}")
-            print(f"Error Message: {error_details['error_msg']}")
-            print(f"Request URL: {error_details['request_url']}")
-            print(f"Model: {error_details['request_model']}")
-            print(f"\nFull Traceback:")
-            print(error_details['traceback'])
-            print("=" * 80)
+            print(f"Warning Or Error: {e}")
+            print(error_msg)
+            print(error_response_code)
 
         metrics[common_metrics.INTER_TOKEN_LAT] = sum(time_to_next_token) #This should be same as metrics[common_metrics.E2E_LAT]. Leave it here for now
         metrics[common_metrics.TTFT] = ttft

@@ -89,6 +89,7 @@ def randomly_sample_sonnet_lines_prompt(
         f"with {expect_output_tokens} output tokens. "
         "Don't generate eos tokens:\n\n"
     )
+    
     # get a prompt length that is at least as long as the base
     num_prompt_tokens = sample_random_positive_int(
         prompt_tokens_mean, prompt_tokens_stddev
