@@ -105,7 +105,13 @@ class OpenAIChatCompletionsClient(LLMClient):
                         continue
 
                     delta = choice.get("delta") or {}
-                    if delta.get("content", None):
+                    # Field name varies by provider — extend this chain if a new one appears.
+                    text_delta = (
+                        delta.get("content")
+                        or delta.get("reasoning_content")
+                        or delta.get("reasoning")
+                    )
+                    if text_delta:
                         if not ttft:
                             ttft = time.monotonic() - start_time
                             time_to_next_token.append(ttft)
@@ -114,7 +120,7 @@ class OpenAIChatCompletionsClient(LLMClient):
                                 time.monotonic() - most_recent_received_token_time
                             )
                         most_recent_received_token_time = time.monotonic()
-                        generated_text += delta["content"]
+                        generated_text += text_delta
 
             total_request_time = time.monotonic() - start_time
             output_throughput = tokens_received / total_request_time
